@@ -1140,11 +1140,12 @@ class FeatureEngineer:
         for col in shift_cols:
             df[f'{col}_lag1'] = df[col].shift(1)
 
-        # Удаляем несдвинутые версии признаков
         df = df.drop(columns=shift_cols)
 
-        # Удаляем строки с NaN (первые наблюдения после shift)
-        df = df.dropna()
+        lag1_cols = [c for c in df.columns if c.endswith('_lag1')]
+        df[lag1_cols] = df[lag1_cols].fillna(0)
+
+        df = df.iloc[1:].reset_index(drop=True)
 
         return df
 
