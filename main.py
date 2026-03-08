@@ -92,6 +92,87 @@ def parse_symbols_arg(symbols_str: str) -> list:
     return symbols
 
 
+def load_manual_labels(
+    labels_path: str,
+    data: Dict[str, pd.DataFrame],
+) -> pd.DataFrame:
+    """
+    Load manual pump/dump labels from CSV and expand to per-candle labels.
+
+    CSV format:
+        symbol,start,end,type
+        PEPE/USDT,2026-01-15 10:00,2026-01-15 10:30,pump
+        WIF/USDT,2026-01-20 14:00,2026-01-20 14:15,dump
+
+    All candles in [start, end] range get label 1 (pump) or -1 (dump).
+    All other candles get label 0 (neutral).
+    """
+    events = pd.read_csv(labels_path)
+    required_cols = {'symbol', 'start', 'end', 'type'}
+    if not required_cols.issubset(set(events.columns)):
+        missing = required_cols - set(events.columns)
+        raise ValueError(
+            f"Manual labels CSV missing columns: {missing}. "
+            f"Required: symbol, start, end, type"
+        )
+
+    events['start'] = pd.to_datetime(events['start'])
+    events['end'] = pd.to_datetime(events['end'])
+    events['type'] = events['type'].str.strip().str.lower()
+
+    all_labels = []
+    symbols_with_events = set(events['symbol'].unique())
+
+    for symbol, df in data.items():
+        if symbol == "BTC/USDT":
+            continue
+
+        df = df.copy().sort_values("timestamp").reset_index(drop=True)
+        labels = pd.DataFrame({
+            "timestamp": df["timestamp"],
+            "symbol": symbol,
+            "label": 0,
+        })
+
+        sym_events = events[events['symbol'] == symbol]
+        n_pump = 0
+        n_dump = 0
+        for _, ev in sym_events.iterrows():
+            mask = (df['timestamp'] >= ev['start']) & (df['timestamp'] <= ev['end'])
+            if ev['type'] == 'pump':
+                labels.loc[mask, 'label'] = 1
+                n_pump += mask.sum()
+            elif ev['type'] == 'dump':
+                labels.loc[mask, 'label'] = -1
+                n_dump += mask.sum()
+            else:
+                print(f"  WARNING: Unknown event type '{ev['type']}' for {symbol}, skipping")
+
+        all_labels.append(labels)
+        n_total = len(labels)
+        print(
+            f"  {symbol}: Pump candles={n_pump}  Dump candles={n_dump}  "
+            f"Neutral={n_total - n_pump - n_dump}  Total={n_total}"
+        )
+
+    if not all_labels:
+        return pd.DataFrame(columns=["timestamp", "symbol", "label"])
+
+    result = pd.concat(all_labels, ignore_index=True)
+    n_p = int((result["label"] == 1).sum())
+    n_d = int((result["label"] == -1).sum())
+    n_n = int((result["label"] == 0).sum())
+    n = len(result)
+
+    print(f"\nManual labels loaded: total={n}")
+    print(f"  Pumps (1):   {n_p:>6} ({100*n_p/n:.1f}%)")
+    print(f"  Dumps (-1):  {n_d:>6} ({100*n_d/n:.1f}%)")
+    print(f"  Neutral (0): {n_n:>6} ({100*n_n/n:.1f}%)")
+    print(f"  Events from CSV: {len(events)} rows, symbols: {list(symbols_with_events)}")
+
+    return result
+
+
 def generate_labels_from_data(
     data: Dict[str, pd.DataFrame],
     profiles: Optional[List] = None,
@@ -189,6 +270,9 @@ def parse_args() -> argparse.Namespace:
                       help="Comma-separated symbols (e.g. PEPE/USDT,WIF/USDT)")
     dual.add_argument("--lookahead", type=int, default=64,
                     help="Lookahead candles for label generation (default 64)")
+    dual.add_argument("--labels", type=str, default=None,
+                    help="Path to manual labels CSV (columns: symbol,start,end,type). "
+                         "type = pump or dump. Overrides auto-generated labels.")
 
     # ── collect ───────────────────────────────────────────────────────────────
     collect = subparsers.add_parser("collect", help="Collect raw data only")
@@ -320,11 +404,16 @@ async def run_dual_training(args: argparse.Namespace) -> None:
     print("STEP 4: Generating Labels")
     print(f"{'='*70}")
 
-    labels_df = generate_labels_from_data(
-        data=data,
-        default_threshold_pct=args.pump_threshold,
-        lookahead=args.lookahead,
-    )
+    if args.labels:
+        print(f"Loading MANUAL labels from: {args.labels}")
+        labels_df = load_manual_labels(args.labels, data)
+    else:
+        print("Using AUTO-generated labels (price movement threshold)")
+        labels_df = generate_labels_from_data(
+            data=data,
+            default_threshold_pct=args.pump_threshold,
+            lookahead=args.lookahead,
+        )
 
     if labels_df.empty:
         logger.error("No labels generated!")
