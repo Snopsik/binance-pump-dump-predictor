@@ -1145,7 +1145,10 @@ class FeatureEngineer:
         lag1_cols = [c for c in df.columns if c.endswith('_lag1')]
         df[lag1_cols] = df[lag1_cols].fillna(0)
 
-        df = df.iloc[1:].reset_index(drop=True)
+        if len(df) > 1:
+            df = df.iloc[1:].reset_index(drop=True)
+        else:
+            logger.warning(f"Only {len(df)} rows after shift — cannot drop first row")
 
         return df
 

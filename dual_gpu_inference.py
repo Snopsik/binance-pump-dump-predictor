@@ -315,17 +315,29 @@ class DualGPUInferenceEngine:
                 if col in btc_df.columns:
                     btc_df[col] = pd.to_numeric(btc_df[col], errors='coerce')
 
+        print(f"   History: {len(history_df)} rows, BTC: {len(btc_df) if not btc_df.empty else 0} rows", flush=True)
+
         try:
             features_df = self._feature_engineer.generate_all_features(
                 history_df, btc_df if not btc_df.empty else None
             )
         except Exception as e:
-            print(f"   ❌ FEATURE ERROR: {e}", flush=True)
+            print(f"   FEATURE ERROR: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
             logger.error(f"Feature generation error for {symbol}: {e}", exc_info=True)
             return
 
         if features_df.empty:
             print(f"   WARNING: Feature generation returned empty DataFrame", flush=True)
+            print(f"   DEBUG: history_df shape={history_df.shape}, columns={list(history_df.columns)}", flush=True)
+            try:
+                test_df = self._feature_engineer._generate_trade_flow_features(history_df.copy())
+                test_df = self._feature_engineer._generate_volume_anomaly_features(test_df)
+                test_df = self._feature_engineer._generate_price_action_features(test_df)
+                print(f"   DEBUG: After individual features: {test_df.shape}, NaN cols: {test_df.isna().any().sum()}", flush=True)
+            except Exception as dbg_e:
+                print(f"   DEBUG: Feature step failed: {dbg_e}", flush=True)
             return
 
         feature_cols = [c for c in features_df.columns if c.endswith('_lag1')]
